@@ -1,152 +1,117 @@
 import streamlit as st
 import os
-import tempfile
+from rag_logic import create_vector_store, get_conversational_chain
 from dotenv import load_dotenv
-from rag_logic import (
-    load_document,
-    split_text_into_chunks,
-    create_vector_store,
-    get_doctor_persona,
-    create_conversational_chain,
-)
-
-# Load environment variables
-load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 def main():
-    """
-    Main function to run the Streamlit application.
-    """
     st.set_page_config(page_title="DocTalk", page_icon="🩺", layout="wide")
 
-    # Custom CSS for styling
+    # --- Custom Styling ---
     st.markdown("""
         <style>
-        .stApp {
-            background-color: #f0f2f6;
-        }
-        .st-chat-message {
-            border-radius: 10px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        }
-        .st-chat-message[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageContent"]>p:first-child:before) {
-            background-color: #DCF8C6; /* User message color */
-        }
-        .st-chat-message[data-testid="stChatMessage"]:not(:has(div[data-testid="stChatMessageContent"]>p:first-child:before)) {
-            background-color: #FFFFFF; /* Bot message color */
-        }
-        h1 {
-            color: #1E3A8A; /* A deep blue color */
-            text-align: center;
-        }
-        .st-emotion-cache-1y4p8pa {
-            max-width: 80%;
-            margin: auto;
-        }
-        .stTextInput > div > div > input {
+        .stApp { background-color: #f0f2f6; }
+        h1, h2, h3 { color: #1E3A8A; text-align: center; }
+        .persona-badge {
+            background-color: #1E3A8A;
+            color: white;
+            padding: 0.4em 1em;
             border-radius: 20px;
+            display: inline-block;
+            font-size: 1em;
+            margin-top: 10px;
+        }
+        .chat-bubble-user {
+            background-color: #DCF8C6;
+            padding: 10px;
+            border-radius: 10px;
+            margin-bottom: 5px;
+        }
+        .chat-bubble-assistant {
+            background-color: #FFFFFF;
+            padding: 10px;
+            border-radius: 10px;
+            margin-bottom: 5px;
+            border: 1px solid #ccc;
         }
         </style>
     """, unsafe_allow_html=True)
 
     st.title("🩺 DocTalk: Your Medical Report Assistant")
-    st.markdown("<h4 style='text-align: center; color: #555;'>Upload your medical report and ask questions with a specialized AI assistant.</h4>", unsafe_allow_html=True)
-    st.markdown("---")
 
-    # Initialize session state variables
+    # --- Session State ---
     if "conversation_chain" not in st.session_state:
         st.session_state.conversation_chain = None
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
     if "persona" not in st.session_state:
-        st.session_state.persona = "General Practitioner"
+        st.session_state.persona = None
 
-    # Sidebar for document upload and processing
+    # --- Sidebar Upload ---
     with st.sidebar:
-        st.header("Upload Your Report")
-        uploaded_file = st.file_uploader(
-            "Choose a PDF, DOCX, or TXT file", type=["pdf", "docx", "txt"]
-        )
+        st.header("📄 Upload Your Report")
+        uploaded_file = st.file_uploader("Choose a PDF or Word document", type=["pdf", "docx"])
 
         if uploaded_file:
-            if st.button("Process Document"):
-                if not GROQ_API_KEY:
-                    st.error("GROQ_API_KEY is not set. Please add it to your environment variables.")
-                else:
-                    with st.spinner("Processing your document... This may take a moment."):
-                        try:
-                            # Use a temporary file to handle the upload
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
-                                tmp_file.write(uploaded_file.getvalue())
-                                tmp_file_path = tmp_file.name
+            st.caption(f"**File:** {uploaded_file.name} ({uploaded_file.type})")
 
-                            # 1. Load Document
-                            documents = load_document(tmp_file_path)
+            if st.button("🔍 Process Document"):
+                with st.spinner("Analyzing your report..."):
+                    try:
+                        load_dotenv()
+                        groq_api_key = os.getenv("GROQ_API_KEY")
+                        if not groq_api_key:
+                            st.error("GROQ_API_KEY is missing in environment variables.")
+                            st.stop()
 
-                            # 2. Split into chunks
-                            text_chunks = split_text_into_chunks(documents)
-                            if not text_chunks:
-                                st.error("Could not extract text from the document. Please try another file.")
-                                return
+                        vector_store = create_vector_store(uploaded_file)
+                        if vector_store is None:
+                            st.error("Could not extract text. Try another file.")
+                            st.stop()
 
-                            # 3. Create Vector Store
-                            vector_store = create_vector_store(text_chunks)
+                        st.session_state.conversation_chain, st.session_state.persona = get_conversational_chain(
+                            vector_store, groq_api_key
+                        )
 
-                            # 4. Determine Persona
-                            st.session_state.persona = get_doctor_persona(vector_store, GROQ_API_KEY)
+                        st.session_state.messages = []
+                        st.success("✅ Document processed successfully!")
+                        st.rerun()
 
-                            # 5. Create Conversational Chain
-                            st.session_state.conversation_chain = create_conversational_chain(
-                                vector_store, GROQ_API_KEY, st.session_state.persona
-                            )
-                            
-                            # 6. Reset chat history and notify user
-                            st.session_state.chat_history = []
-                            st.success(f"Document processed successfully! I am now acting as a **{st.session_state.persona}**.")
-                            st.info("You can now ask questions about your report in the main chat window.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
-                        except Exception as e:
-                            st.error(f"An error occurred: {e}")
-                        finally:
-                            # Clean up the temporary file
-                            if 'tmp_file_path' in locals() and os.path.exists(tmp_file_path):
-                                os.remove(tmp_file_path)
+        st.info("Uploaded files are deleted after processing.")
+        st.warning("This tool is not a substitute for professional medical advice.")
 
-        st.info("Your uploaded documents are not stored and will be deleted after the session ends.")
-        st.warning("This tool is for informational purposes only and not a substitute for professional medical advice.")
+    # --- Persona Display ---
+    if st.session_state.persona:
+        st.markdown(f"<div class='persona-badge'>🧑‍⚕️ Role: {st.session_state.persona}</div>", unsafe_allow_html=True)
+        st.markdown("#### Ask me anything about your report below 👇")
 
-    # Display chat history
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    # --- Chat Interface ---
+    if not st.session_state.conversation_chain:
+        st.info("Upload and process a document to start chatting.")
 
-    # Handle user input
+    for message in st.session_state.messages:
+        bubble_class = "chat-bubble-user" if message["role"] == "user" else "chat-bubble-assistant"
+        st.markdown(f"<div class='{bubble_class}'>{message['content']}</div>", unsafe_allow_html=True)
+
     if user_question := st.chat_input("Ask a question about your report..."):
         if st.session_state.conversation_chain is None:
-            st.warning("Please upload and process a document first.")
+            st.warning("Please process a document first.")
         else:
-            # Add user message to history
-            st.session_state.chat_history.append({"role": "user", "content": user_question})
-            with st.chat_message("user"):
-                st.markdown(user_question)
+            st.session_state.messages.append({"role": "user", "content": user_question})
+            st.markdown(f"<div class='chat-bubble-user'>{user_question}</div>", unsafe_allow_html=True)
 
-            # Get bot response
             with st.spinner("Thinking..."):
                 try:
-                    result = st.session_state.conversation_chain.invoke({"query": user_question})
-                    response = result["result"]
-                    # Add bot response to history
-                    st.session_state.chat_history.append({"role": "assistant", "content": response})
-                    with st.chat_message("assistant"):
-                        st.markdown(response)
+                    result = st.session_state.conversation_chain.invoke({"input": user_question})
+                    response = result["answer"]
+                    st.markdown(f"<div class='chat-bubble-assistant'>{response}</div>", unsafe_allow_html=True)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
                 except Exception as e:
-                    error_message = f"Sorry, an error occurred: {e}"
-                    st.session_state.chat_history.append({"role": "assistant", "content": error_message})
-                    with st.chat_message("assistant"):
-                        st.markdown(error_message)
+                    error_msg = f"Sorry, something went wrong: {e}"
+                    st.error(error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
 if __name__ == "__main__":
     main()

@@ -1,115 +1,116 @@
 import os
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, TextLoader
+import tempfile
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.prompts import PromptTemplate
 from langchain_groq import ChatGroq
-from langchain.chains import RetrievalQA
+from langchain.chains import LLMChain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains import create_retrieval_chain
 
+# --- File Handling ---
+def save_temp_file(uploaded_file):
+    ext = os.path.splitext(uploaded_file.name)[1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        return tmp_file.name
+
+# --- Document Loading ---
 def load_document(file_path):
-    """
-    Loads a document (PDF, DOCX, or TXT) from the given file path.
-    """
-    _, file_extension = os.path.splitext(file_path)
-    if file_extension.lower() == '.pdf':
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == '.pdf':
         loader = PyPDFLoader(file_path)
-    elif file_extension.lower() == '.docx':
-        loader = UnstructuredWordDocumentLoader(file_path)
-    elif file_extension.lower() == '.txt':
-        loader = TextLoader(file_path)
+    elif ext == '.docx':
+        loader = Docx2txtLoader(file_path)
     else:
-        raise ValueError("Unsupported file type. Only PDF, DOCX, and TXT are supported.")
-    documents = loader.load()
-    return documents
+        raise ValueError("Unsupported file type. Only PDF and DOCX are supported.")
+    return loader.load()
 
-def split_text_into_chunks(documents):
-    """
-    Splits the loaded documents into smaller chunks for processing.
-    """
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    chunks = text_splitter.split_documents(documents)
-    return chunks
+# --- Text Splitting ---
+def split_text(documents, chunk_size=1000, chunk_overlap=200):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    return splitter.split_documents(documents)
 
-def create_vector_store(text_chunks):
-    """
-    Creates a FAISS vector store from text chunks using HuggingFace embeddings.
-    """
-    embeddings = HuggingFaceEmbeddings(
+# --- Embedding and Vector Store ---
+def create_embeddings():
+    return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
         model_kwargs={'device': 'cpu'}
     )
-    vector_store = FAISS.from_documents(text_chunks, embedding=embeddings)
-    return vector_store
 
-def get_doctor_persona(vector_store, groq_api_key):
-    """
-    Determines the appropriate doctor persona based on the document content.
-    """
-    # Using a fast and capable model for persona detection
-    llm = ChatGroq(temperature=0, groq_api_key=groq_api_key, model_name="llama-3.3-70b-versatile")
+def build_vector_store(chunks):
+    embeddings = create_embeddings()
+    return FAISS.from_documents(chunks, embedding=embeddings)
 
-    prompt_template = """
-    Based on the following medical report context, what is the most relevant medical specialty or type of doctor for this case?
-    For example: Cardiologist, Oncologist, Neurologist, Orthopedic Surgeon, etc.
-    Be very specific and concise. Just state the specialty.
+# --- Full Pipeline: Create Vector Store from Uploaded File ---
+def create_vector_store(uploaded_file):
+    if uploaded_file is None:
+        return None
 
-    CONTEXT:
-    {context}
+    tmp_file_path = save_temp_file(uploaded_file)
 
-    SPECIALTY:
-    """
+    try:
+        documents = load_document(tmp_file_path)
+        if not documents:
+            return None
 
-    prompt = PromptTemplate(template=prompt_template, input_variables=["context"])
-    retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+        chunks = split_text(documents)
+        if not chunks:
+            return None
 
-    # This chain is specifically for determining the persona
-    persona_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever,
-        chain_type_kwargs={"prompt": prompt},
-        return_source_documents=False
+        return build_vector_store(chunks)
+
+    finally:
+        if os.path.exists(tmp_file_path):
+            os.remove(tmp_file_path)
+
+# --- Persona Detection ---
+def detect_doctor_persona(llm, retriever):
+    prompt = PromptTemplate(
+        template="""
+        Based on the following medical report context, identify the primary medical specialty of the doctor who would analyze this.
+        Your answer MUST be ONLY the name of the specialty (e.g., "Cardiologist", "Neurologist", "Oncologist").
+
+        CONTEXT: {context}
+
+        SPECIALTY:
+        """,
+        input_variables=["context"]
     )
+    relevant_docs = retriever.get_relevant_documents("What is the main subject of this medical report?")
+    context_text = "\n\n".join([doc.page_content for doc in relevant_docs])
+    chain = LLMChain(llm=llm, prompt=prompt)
+    result = chain.invoke({"context": context_text})
+    return result['text'].strip()
 
-    query = "Determine the medical specialty from this report."
-    result = persona_chain.invoke({"query": query})
-    return result["result"].strip()
-
-
-def create_conversational_chain(vector_store, groq_api_key, persona):
-    """
-    Creates the main conversational RAG chain with the determined doctor persona.
-    """
-    # Using a more powerful model for detailed answers
+# --- Main Conversational RAG Chain ---
+def get_conversational_chain(vector_store, groq_api_key):
     llm = ChatGroq(temperature=0.2, groq_api_key=groq_api_key, model_name="llama-3.3-70b-versatile")
-
-    prompt_template = f"""
-    You are a helpful and empathetic AI medical assistant. Your name is DocTalk.
-    You are role-playing as a highly knowledgeable **{persona}**.
-    Your task is to answer the user's questions based ONLY on the context of the provided medical report.
-    Do not provide medical advice, diagnoses, or treatment plans. You can explain what is in the report, but you cannot interpret it.
-    If the answer to a question is not found within the provided context, you must clearly state, "I cannot find information about that in the provided medical report."
-    Be concise, clear, and use easy-to-understand language.
-
-    CONTEXT:
-    {{context}}
-
-    QUESTION:
-    {{question}}
-
-    ANSWER:
-    """
-
-    prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
     retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
 
-    chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever,
-        chain_type_kwargs={"prompt": prompt},
-        return_source_documents=True
-    )
-    return chain
+    doctor_persona = detect_doctor_persona(llm, retriever)
 
+    rag_prompt = PromptTemplate(
+        template=f"""
+        You are an expert **{doctor_persona}**. Your name is DocTalk.
+        Your role is to answer questions about a patient's medical report in a clear, empathetic, and professional manner.
+        Use ONLY the provided context from the report to answer the user's question accurately.
+        Do not provide medical advice or interpretation.
+        If the answer is not in the context, state that the information is not available in the report.
+
+        CONTEXT:
+        {{context}}
+
+        QUESTION: {{input}}
+
+        ANSWER:
+        """,
+        input_variables=["context", "input"]
+    )
+
+    qa_chain = create_stuff_documents_chain(llm, rag_prompt)
+    rag_chain = create_retrieval_chain(retriever, qa_chain)
+
+    return rag_chain, doctor_persona
