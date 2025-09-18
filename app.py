@@ -1,7 +1,6 @@
 import streamlit as st
 import os
 from rag_logic import create_vector_store, get_conversational_chain
-from dotenv import load_dotenv
 
 def main():
     st.set_page_config(page_title="DocTalk", page_icon="🩺", layout="wide")
@@ -46,7 +45,7 @@ def main():
     if "persona" not in st.session_state:
         st.session_state.persona = None
 
-    # --- Sidebar Upload ---
+    # --- Sidebar Upload & Reset ---
     with st.sidebar:
         st.header("📄 Upload Your Report")
         uploaded_file = st.file_uploader("Choose a PDF or Word document", type=["pdf", "docx"])
@@ -77,6 +76,11 @@ def main():
 
                     except Exception as e:
                         st.error(f"Error: {e}")
+
+        # --- Reset Chat Button ---
+        if st.button("🧹 Reset Chat"):
+            st.session_state.messages = []
+            st.experimental_rerun()
 
         st.info("Uploaded files are deleted after processing.")
         st.warning("This tool is not a substitute for professional medical advice.")
