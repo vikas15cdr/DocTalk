@@ -1,5 +1,5 @@
 import os
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -15,7 +15,7 @@ def load_document(file_path):
     if file_extension.lower() == '.pdf':
         loader = PyPDFLoader(file_path)
     elif file_extension.lower() == '.docx':
-        loader = Docx2txtLoader(file_path)
+        loader = UnstructuredWordDocumentLoader(file_path)
     elif file_extension.lower() == '.txt':
         loader = TextLoader(file_path)
     else:
