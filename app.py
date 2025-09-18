@@ -57,10 +57,9 @@ def main():
             if st.button("🔍 Process Document"):
                 with st.spinner("Analyzing your report..."):
                     try:
-                        load_dotenv()
-                        groq_api_key = os.getenv("GROQ_API_KEY")
+                        groq_api_key = st.secrets.get("GROQ_API_KEY")
                         if not groq_api_key:
-                            st.error("GROQ_API_KEY is missing in environment variables.")
+                            st.error("GROQ_API_KEY is missing in Streamlit secrets.")
                             st.stop()
 
                         vector_store = create_vector_store(uploaded_file)
